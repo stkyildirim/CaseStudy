@@ -21,9 +21,9 @@ public class FlightSearchService {
         this.providerBClient = providerBClient;
     }
 
-    /**
-     * 2.1: Provider A ve B’den gelen tüm uçuşları birleştirir
-     */
+
+    // 2.1: Provider A ve B’den gelen tüm uçuşları birleştirir
+
     public SearchResponse getAllFlights(SearchRequest request) {
         List<Flight> allFlights = new ArrayList<>();
 
