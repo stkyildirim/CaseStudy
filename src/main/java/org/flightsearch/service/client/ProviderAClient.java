@@ -9,6 +9,7 @@ import org.flightsearch.model.SearchRequest;
 import org.flightsearch.model.SearchResponse;
 import org.flightsearch.repository.RequestResponseLogRepository;
 import org.flightsearch.service.cache.CacheService;
+import org.flightsearch.service.helper.BaseProviderClient;
 import org.springframework.stereotype.Component;
 import org.w3c.dom.NodeList;
 import javax.xml.transform.Source;
@@ -28,7 +29,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Component
-public class ProviderAClient {
+public class ProviderAClient implements BaseProviderClient {
 
     private static final String PROVIDER_A_WSDL_URL = "http://localhost:8081/providerA?wsdl";
     private static final String NAMESPACE = "http://service.flightprovidera.com/";
@@ -67,11 +68,14 @@ public class ProviderAClient {
 
             log.setRequest(requestXml);
 
-            // --- SOAP service ve dispatch ---
+            // --- SOAP service ve dispatch --- Yani verilen urlden wsld ini indri namespace ve servis name kontrol et
+            //eğer varsa java tarafında servis
             Service service = Service.create(
                     new java.net.URL(PROVIDER_A_WSDL_URL),
                     new QName(NAMESPACE, SERVICE_NAME)
             );
+
+            // Verilen namespace ve port üzerinden bana bir kanal kur, buradan iletişim halinde olacağım network
             Dispatch<Source> dispatch = service.createDispatch(
                     new QName(NAMESPACE, PORT_NAME),
                     Source.class,
@@ -79,6 +83,7 @@ public class ProviderAClient {
             );
 
             // --- SOAP çağrı ---
+            //Source xml'in java dünyasındaki soyut temsili string değil byte[] değil hepsini kasayan bir üst tip
             StreamSource source = new StreamSource(new ByteArrayInputStream(requestXml.getBytes(StandardCharsets.UTF_8)));
             Source responseSource = dispatch.invoke(source);
 
@@ -94,10 +99,7 @@ public class ProviderAClient {
             }
 
             // --- Response parse ---
-            List<String> errors = new ArrayList<>();
-            List<Flight> flights = parseResponse(responsString, errors);
-
-            return new SearchResponse(false, null, flights);
+            return parseResponse(responsString);
 
         } catch (WebServiceException e) {
             return new SearchResponse(true, "SOAP error: " + e.getMessage(), new ArrayList<>());
@@ -122,7 +124,7 @@ public class ProviderAClient {
             return "Error converting SOAP response to String: " + e.getMessage();
         }
     }
-    private List<Flight> parseResponse(String responseSource, List<String> errors) throws Exception {
+    private SearchResponse parseResponse(String responseSource) throws Exception {
         List<Flight> flights = new ArrayList<>();
 
         // --- Source -> DOM Document ---
@@ -136,58 +138,69 @@ public class ProviderAClient {
         DateTimeFormatter formatter = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
         // --- Hata mesajlarını kontrol et ---
+        boolean errorRequest = Boolean.FALSE;
+        NodeList hasError = doc.getElementsByTagName("hasError");
         NodeList errorNodes = doc.getElementsByTagName("errorMessage");
-        for (int i = 0; i < errorNodes.getLength(); i++) {
-            String msg = errorNodes.item(i).getTextContent();
-            if (msg != null && !msg.isEmpty()) {
-                errors.add(msg);
+
+        if (hasError.getLength()>0){
+            String isError = hasError.item(0).getTextContent();
+            if (isError != null && !isError.isEmpty() && isError.equals("true")) {
+                errorRequest = Boolean.TRUE;
             }
         }
 
-        // --- flightOptions ---
-        NodeList flightNodes = doc.getElementsByTagName("flightOptions");
-        for (int i = 0; i < flightNodes.getLength(); i++) {
-            org.w3c.dom.Element flightElem = (org.w3c.dom.Element) flightNodes.item(i);
-
-            String flightNo = getTextContent(flightElem, "flightNo");
-            String origin = getTextContent(flightElem, "origin");
-            String destination = getTextContent(flightElem, "destination");
-            String departStr = getTextContent(flightElem, "departuredatetime");
-            String arrivalStr = getTextContent(flightElem, "arrivaldatetime");
-            String priceStr = getTextContent(flightElem, "price");
-
-            LocalDateTime departure = null;
-            LocalDateTime arrival = null;
-            BigDecimal price = null;
-
-            try {
-                if (departStr != null && !departStr.isEmpty()) {
-                    departure = LocalDateTime.parse(departStr, formatter);
-                }
-            } catch (Exception e) {
-                errors.add("Invalid departure datetime format for flight " + flightNo);
-            }
-
-            try {
-                if (arrivalStr != null && !arrivalStr.isEmpty()) {
-                    arrival = LocalDateTime.parse(arrivalStr, formatter);
-                }
-            } catch (Exception e) {
-                errors.add("Invalid arrival datetime format for flight " + flightNo);
-            }
-
-            try {
-                if (priceStr != null && !priceStr.isEmpty()) {
-                    price = new BigDecimal(priceStr);
-                }
-            } catch (Exception e) {
-                errors.add("Invalid price for flight " + flightNo);
-            }
-
-            flights.add(new Flight(flightNo, origin, destination, departure, arrival, price));
+        String errorMesagge = null;
+        if (errorNodes.getLength()>0){
+            errorMesagge = errorNodes.item(0).getTextContent();
         }
 
-        return flights;
+        if (errorRequest) {
+            return new SearchResponse(true, errorMesagge, new ArrayList<>());
+        }
+            // --- flightOptions ---
+            NodeList flightNodes = doc.getElementsByTagName("flightOptions");
+            for (int i = 0; i < flightNodes.getLength(); i++) {
+                org.w3c.dom.Element flightElem = (org.w3c.dom.Element) flightNodes.item(i);
+
+                String flightNo = getTextContent(flightElem, "flightNo");
+                String origin = getTextContent(flightElem, "origin");
+                String destination = getTextContent(flightElem, "destination");
+                String departStr = getTextContent(flightElem, "departuredatetime");
+                String arrivalStr = getTextContent(flightElem, "arrivaldatetime");
+                String priceStr = getTextContent(flightElem, "price");
+
+                LocalDateTime departure = null;
+                LocalDateTime arrival = null;
+                BigDecimal price = null;
+
+                try {
+                    if (departStr != null && !departStr.isEmpty()) {
+                        departure = LocalDateTime.parse(departStr, formatter);
+                    }
+                } catch (Exception e) {
+                    errorMesagge ="Invalid departure datetime format for flight " + flightNo;
+                }
+
+                try {
+                    if (arrivalStr != null && !arrivalStr.isEmpty()) {
+                        arrival = LocalDateTime.parse(arrivalStr, formatter);
+                    }
+                } catch (Exception e) {
+                    errorMesagge = "Invalid arrival datetime format for flight " + flightNo;
+                }
+
+                try {
+                    if (priceStr != null && !priceStr.isEmpty()) {
+                        price = new BigDecimal(priceStr);
+                    }
+                } catch (Exception e) {
+                    errorMesagge = "Invalid price for flight " + flightNo;
+                }
+
+                flights.add(new Flight(flightNo, origin, destination, departure, arrival, price));
+            }
+
+         return new SearchResponse(false, errorMesagge, flights);
     }
 
     // --- Yardımcı method ---

@@ -9,11 +9,13 @@ import org.flightsearch.model.SearchRequest;
 import org.flightsearch.model.SearchResponse;
 import org.flightsearch.repository.RequestResponseLogRepository;
 import org.flightsearch.service.cache.CacheService;
+import org.flightsearch.service.helper.BaseProviderClient;
 import org.springframework.stereotype.Component;
 import org.w3c.dom.NodeList;
+
+import javax.xml.namespace.QName;
 import javax.xml.transform.Source;
 import javax.xml.transform.stream.StreamSource;
-import javax.xml.namespace.QName;
 import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -23,7 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Component
-public class ProviderBClient {
+public class ProviderBClient implements BaseProviderClient {
 
     private static final String PROVIDER_B_WSDL_URL = "http://localhost:8082/providerB?wsdl";
     private static final String NAMESPACE = "http://service.flightproviderb.com/";
@@ -89,10 +91,7 @@ public class ProviderBClient {
             }
 
             // --- Response parse ---
-            List<String> errors = new ArrayList<>();
-            List<Flight> flights = parseResponse(responsString, errors);
-
-            return new SearchResponse(false, null, flights);
+            return parseResponse(responsString);
 
         } catch (WebServiceException e) {
             return new SearchResponse(true, "SOAP error: " + e.getMessage(), new ArrayList<>());
@@ -101,7 +100,7 @@ public class ProviderBClient {
         }
     }
 
-    private List<Flight> parseResponse(String responseSource, List<String> errors) throws Exception {
+    private SearchResponse parseResponse(String responseSource) throws Exception {
         List<Flight> flights = new ArrayList<>();
 
         // --- Source -> DOM Document ---
@@ -115,12 +114,24 @@ public class ProviderBClient {
         DateTimeFormatter formatter = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
         // --- Hata mesajlarını kontrol et ---
+        boolean errorRequest = Boolean.FALSE;
+        NodeList hasError = doc.getElementsByTagName("hasError");
         NodeList errorNodes = doc.getElementsByTagName("errorMessage");
-        for (int i = 0; i < errorNodes.getLength(); i++) {
-            String msg = errorNodes.item(i).getTextContent();
-            if (msg != null && !msg.isEmpty()) {
-                errors.add(msg);
+
+        if (hasError.getLength()>0){
+            String isError = hasError.item(0).getTextContent();
+            if (isError != null && !isError.isEmpty() && isError.equals("true")) {
+                errorRequest = Boolean.TRUE;
             }
+        }
+
+        String errorMesagge = null;
+        if (errorNodes.getLength()>0){
+            errorMesagge = errorNodes.item(0).getTextContent();
+        }
+
+        if (errorRequest) {
+            return new SearchResponse(true, errorMesagge, new ArrayList<>());
         }
 
         // --- flightOptions ---
@@ -144,7 +155,7 @@ public class ProviderBClient {
                     departure = LocalDateTime.parse(departStr, formatter);
                 }
             } catch (Exception e) {
-                errors.add("Invalid departure datetime format for flight " + flightNo);
+                errorMesagge = "Invalid departure datetime format for flight " + flightNo;
             }
 
             try {
@@ -152,7 +163,7 @@ public class ProviderBClient {
                     arrival = LocalDateTime.parse(arrivalStr, formatter);
                 }
             } catch (Exception e) {
-                errors.add("Invalid arrival datetime format for flight " + flightNo);
+                errorMesagge = "Invalid arrival datetime format for flight " + flightNo;
             }
 
             try {
@@ -160,13 +171,12 @@ public class ProviderBClient {
                     price = new BigDecimal(priceStr);
                 }
             } catch (Exception e) {
-                errors.add("Invalid price for flight " + flightNo);
+                errorMesagge = "Invalid price for flight " + flightNo;
             }
 
             flights.add(new Flight(flightNo, origin, destination, departure, arrival, price));
         }
-
-        return flights;
+        return new SearchResponse(false, errorMesagge, flights);
     }
 
     // --- Yardımcı method ---
